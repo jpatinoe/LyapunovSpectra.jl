@@ -62,9 +62,8 @@ LyapunovSpectra.jl/
 │   ├── lorenz.jl            # Step-by-step walkthrough — Lorenz system
 │   └── hamiltonian.jl       # Quartic Hamiltonian system
 ├── test/
-│   └── runtests.jl          # Automated test suite (algorithm + examples)
 │   ├── test_algorithm.jl    # Tests for algorithm implementation
-│   ├── test_examples.jl     # Specific test for the examples
+│   └── test_examples.jl     # Specific test for the examples
 └── Project.toml
 ```
 
@@ -253,60 +252,65 @@ Both scripts save a convergence plot (`.png`) in the project root.
 ## Running the tests
 
 ```bash
-julia --project=. test/runtests.jl
+julia --project=. test/test_examples.jl
 ```
 
-The test suite is split into two parts:
+The test suite is split into two files with distinct roles:
 
-**Generic algorithm tests** (`test/test_algorithm.jl`) — these check mathematical
-properties that must hold for any correct implementation of the method,
-regardless of which system is used:
+**`test/test_algorithm.jl`** — provides two callable functions. Import this file and call these functions from your
+own test file after computing the Lyapunov exponents:
 
-| Test | Property | Why it must hold |
-|------|-----------|-----------------|
-| A1 | Exponents in descending order | Structural property of Gram-Schmidt ordering |
-| A2 | Partial spectrum (k=1) consistent with full | Largest exponent unaffected by reducing k |
-| A3 | Frame orthonormality `‖E'E − I‖ < 1e-6` | β stabilisation term in eq. (6) |
-| A4 | Sum of exponents = tr(J) | Liouville's theorem |
-| A5 | Symplectic pairing `λₖ + λ_{d+1−k} = 0` | Hamiltonian structure of the flow |
+```julia
+include("test/test_algorithm.jl")
 
-**Example-specific tests** (`test/test_examples.jl`) — these check known
-qualitative facts about the two systems from the paper. They are tied to
-specific parameter choices and initial conditions:
+# For any dissipative system
+test_dissipative(prob, λ, x0, T)
+
+# For any Hamiltonian system (calls test_dissipative first, then adds symplectic checks)
+test_hamiltonian(prob, λ, x0, T)
+```
+
+The generic tests check properties that must hold for **any** correct
+implementation, regardless of which system is used:
+
+| Test | Applies to | Property |
+|------|-----------|---------|
+| D1 | Any system | Exponents in descending order $`\lambda_1 \geq \lambda_2 \geq \dots`$ |
+| D2 | Any autonomous system | At least one exponent near zero if not approaching an equilibrium (flow direction) |
+| D3 | Any system | Frame orthonormality $`\|E^\top E - I\| < 10^{-6}`$ |
+| D4 | Any system | $`k=1`$ consistent with full spectrum |
+| H1 | Hamiltonian only | Symplectic pairing $`\lambda_k + \lambda_{d+1-k} = 0`$ |
+| H2 | Hamiltonian only | Sum of exponents $`\approx 0`$ (volume-preserving flow) |
+
+**`test/test_examples.jl`** — self-contained script that runs the full
+test suite for both example systems. For each system it:
+1. Computes the Lyapunov exponents
+2. Calls the appropriate generic function (`test_dissipative` or `test_hamiltonian`)
+3. Adds system-specific assertions against known values from the paper
 
 | Test | System | Property |
 |------|--------|----------|
-| E1 | Lorenz | λ₁ > 0 (system is chaotic) |
-| E2 | Lorenz | λ₂ ≈ 0 (neutral direction along the flow) |
-| E3 | Lorenz | λ₁ within 0.05 of paper value (0.9057) |
-| E4 | Hamiltonian | λ₁ > 0 (system is chaotic at this energy) |
+| E1 | Lorenz | $`\lambda_1 > 0`$ (chaotic attractor) |
+| E2 | Lorenz | $`\sum \lambda_m = -\sigma - 1 - b = -13.6\overline{6}`$ (Liouville) |
+| E3 | Lorenz | $`\lambda_1 \approx 0.9057`$ (paper Table 1, tolerance $`\pm 0.05`$) |
+| E4 | Hamiltonian | $`\lambda_1 > 0`$ (chaotic at this energy) |
 | E5 | Hamiltonian | Three positive and three negative exponents |
-| E6 | Hamiltonian | Positive exponents in expected range |
+| E6 | Hamiltonian | $`\lambda_1 \approx 0.24`$, $`\lambda_2 \approx 0.12`$ (paper Table 2) |
 
-If A-tests fail, the algorithm implementation is broken. If E-tests fail,
+To test your own system, follow the same pattern as `test_examples.jl`:
+
+```julia
+prob = LyapunovProblem(my_v!, my_J!, d, k, β)
+λ    = lyapunov_exponents(prob, x0, T)
+
+test_dissipative(prob, λ, x0, T)   # or test_hamiltonian if applicable
+
+# Add your own system-specific assertions here
+@test λ[1] > 0.0
+```
+
+If D-tests fail, the algorithm implementation is broken. If E-tests fail,
 the example systems or their parameters may need adjusting.
-
----
-
-## Validation
-
-Two analytical constraints validate the algorithm independently of
-the paper's numerical values:
-
-**Lorenz** — the sum of all exponents equals the trace of the Jacobian
-averaged over the attractor:
-
-```math
-\lambda_1 + \lambda_2 + \lambda_3 = -\sigma - 1 - b = -13.6\overline{6}
-```
-
-**Hamiltonian** — symplectic structure forces exponents to come in conjugate pairs:
-
-```math
-\lambda_k + \lambda_{d+1-k} = 0 \qquad \text{for all } k
-```
-
-Both constraints are satisfied to $`< 10^{-4}`$ in our implementation.
 
 ---
 

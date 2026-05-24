@@ -3,124 +3,169 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # GENERIC ALGORITHM TESTS
 #
-# These tests check mathematical properties that must hold for ANY correct
-# implementation of the continuous Gram-Schmidt Lyapunov method, regardless
-# of which dynamical system is used. They test the algorithm itself, not
-# the specific numerical values of any particular example.
+# This file provides two callable functions — not a standalone script.
+# Call them from test_examples.jl (or your own test file) after computing
+# the Lyapunov exponents for any system.
 #
-# If any of these fail, something is wrong with the core algorithm in
-# algorithm.jl or solver.jl — not just with the example systems.
+# test_dissipative(prob, λ, x0, T)  — properties that hold for ANY system
+# test_hamiltonian(prob, λ, x0, T)  — calls test_dissipative, then adds
+#                                     Hamiltonian-specific checks
+#
+# Both functions take:
+#   prob  — a LyapunovProblem (needed for frame orthonormality and k=1 test)
+#   λ     — the Lyapunov exponents already computed by lyapunov_exponents()
+#   x0    — the initial condition used to compute λ
+#   T     — the integration time used to compute λ
+#
+# Tolerances can be overridden via keyword arguments — useful when applying
+# to a new system where the defaults may be too tight or too loose.
 # ─────────────────────────────────────────────────────────────────────────────
 
 using Test
+using Printf
 using LinearAlgebra
 using OrdinaryDiffEq
-using LyapunovSpectra
 
-println("─"^60)
-println("  Generic algorithm tests")
-println("─"^60)
 
-# We use the Lorenz system as the test vehicle throughout, but the properties
-# being checked are not Lorenz-specific — they follow from the mathematics
-# of the method and would hold for any well-behaved dynamical system.
-prob = lorenz_system()
-x0   = [1.0, 0.0, 0.0]
-T    = 2000.0
+"""
+    test_dissipative(prob, λ, x0, T; atol_order, atol_zero, atol_ortho, atol_partial)
 
-# Compute once and reuse across tests to avoid redundant integrations.
-λ = lyapunov_exponents(prob, x0, T)
+Run generic algorithm tests for any dynamical system.
+Call this from your own test file after computing λ = lyapunov_exponents(prob, x0, T).
 
-# ── Test A1: Exponents in descending order ────────────────────────────────────
-# The Gram-Schmidt ordering guarantees λ₁ ≥ λ₂ ≥ … ≥ λₖ automatically.
-# This must hold for any system and any initial condition — it is a
-# structural property of the algorithm, not a numerical coincidence.
-@testset "A1: Exponents in descending order" begin
-    println("\nA1: Exponents in descending order")
-    for m in 1:length(λ)-1
-        @printf "    λ%d = %+.4f ≥ λ%d = %+.4f\n" m λ[m] (m+1) λ[m+1]
-        @test λ[m] ≥ λ[m+1]
+# Tests performed
+- D1: exponents in descending order  λ₁ ≥ λ₂ ≥ … ≥ λₖ
+- D2: one exponent near zero         (flow direction of any autonomous system)
+- D3: frame orthonormality           ‖E'E − I‖ < atol_ortho
+- D4: k=1 consistent with full       λ₁(k=1) ≈ λ₁(k=d)
+
+# Keyword arguments
+- `atol_order`   : tolerance for descending order check (default: 1e-10)
+- `atol_zero`    : tolerance for the near-zero exponent (default: 0.05)
+- `atol_ortho`   : tolerance for frame orthonormality   (default: 1e-6)
+- `atol_partial` : tolerance for k=1 vs full spectrum   (default: 0.05)
+"""
+function test_dissipative(prob, λ, x0, T;
+                          atol_order   = 1e-10,
+                          atol_zero    = 0.05,
+                          atol_ortho   = 1e-6,
+                          atol_partial = 0.05)
+
+    k = prob.k
+    d = prob.d
+
+    # ── D1: Exponents in descending order ─────────────────────────────────────
+    # The Gram-Schmidt ordering guarantees λ₁ ≥ λ₂ ≥ … ≥ λₖ for any system.
+    # This is a structural property of the algorithm — if this fails,
+    # something is wrong with the frame evolution in algorithm.jl.
+    @testset "D1: Exponents in descending order" begin
+        println("  D1: Descending order")
+        for m in 1:k-1
+            @printf "      λ%d = %+.4f ≥ λ%d = %+.4f\n" m λ[m] (m+1) λ[m+1]
+            @test λ[m] ≥ λ[m+1] - atol_order
+        end
+    end
+
+    # ── D2: One exponent near zero ────────────────────────────────────────────
+    # For any autonomous system, the direction along the flow neither grows
+    # nor shrinks — so one Lyapunov exponent must be (approximately) zero.
+    # We check that the minimum absolute value across all exponents is small.
+    # Note: for Hamiltonian systems there are two zeros (flow + energy), but
+    # checking for at least one is sufficient here.
+    @testset "D2: At least one exponent near zero (flow direction)" begin
+        println("  D2: At least one exponent near zero")
+        min_abs = minimum(abs.(λ))
+        @printf "      min|λₘ| = %.6f  (threshold: %.2f)\n" min_abs atol_zero
+        @test min_abs < atol_zero
+    end
+
+    # ── D3: Frame orthonormality ──────────────────────────────────────────────
+    # The β stabilisation term in eq. (6) keeps the frame orthonormal.
+    # We rebuild the solution with save_everystep=false and check ‖E'E − I‖
+    # at the final time. This tests the stabilisation mechanism directly.
+    @testset "D3: Frame orthonormality ‖E'E − I‖ < $atol_ortho" begin
+        println("  D3: Frame orthonormality")
+        u0       = make_initial_state(prob, x0)
+        ode!     = build_ode!(prob)
+        ode_prob = ODEProblem(ode!, u0, (0.0, T), nothing)
+        sol      = solve(ode_prob, Tsit5();
+                         reltol         = 1e-8,
+                         abstol         = 1e-8,
+                         maxiters       = 1_000_000,
+                         save_everystep = false)
+
+        E_final = reshape(sol.u[end][d+1 : d+d*k], d, k)
+        err     = norm(E_final' * E_final - I)
+
+        @printf "      ‖E'E − I‖ = %.2e  (threshold: %.0e)\n" err atol_ortho
+        @test err < atol_ortho
+    end
+
+    # ── D4: Partial spectrum (k=1) consistent with full spectrum ──────────────
+    # Computing only k=1 should give the same λ₁ as the full k=d computation.
+    # This tests that reducing k does not corrupt the largest exponent.
+    # We use a loose tolerance because two independent integrations accumulate
+    # different floating-point rounding errors.
+    @testset "D4: Partial spectrum (k=1) consistent with full spectrum" begin
+        println("  D4: k=1 consistent with full spectrum")
+        prob_partial = LyapunovProblem(prob.v, prob.J, prob.d, 1, prob.β)
+        λ_partial    = lyapunov_exponents(prob_partial, x0, T)
+        @printf "      λ₁ (k=%d) = %+.4f\n" k λ[1]
+        @printf "      λ₁ (k=1)  = %+.4f  (tolerance: ±%.2f)\n" λ_partial[1] atol_partial
+        @test λ[1] ≈ λ_partial[1] atol=atol_partial
     end
 end
 
-# ── Test A2: Partial spectrum consistent with full spectrum ───────────────────
-# Computing only k=1 exponent should give the same λ₁ as the full spectrum.
-# This tests that reducing k does not corrupt the largest exponent —
-# a property that follows from the Gram-Schmidt ordering.
-# We use a loose tolerance (0.05) because the two runs use different
-# integration paths and accumulate different floating-point rounding.
-@testset "A2: Partial spectrum (k=1) consistent with full spectrum" begin
-    println("\nA2: Partial spectrum k=1 consistent with full spectrum")
 
-    prob_partial = LyapunovProblem(prob.v, prob.J, prob.d, 1, prob.β)
-    λ_partial    = lyapunov_exponents(prob_partial, x0, T)
+"""
+    test_hamiltonian(prob, λ, x0, T; kwargs...)
 
-    @printf "    λ₁ (k=%d) = %+.4f\n" prob.k   λ[1]
-    @printf "    λ₁ (k=1)  = %+.4f\n"          λ_partial[1]
-    @test λ[1] ≈ λ_partial[1] atol=0.05
-end
+Run generic algorithm tests for a Hamiltonian system.
+Calls `test_dissipative` first, then adds Hamiltonian-specific checks.
 
-# ── Test A3: Frame stays orthonormal ─────────────────────────────────────────
-# The β stabilisation term in equation (6) is designed to keep the frame
-# E = {e₁,…,eₖ} orthonormal at all times. We verify this by checking
-# ‖E'E − I‖ at the end of the integration.
-# This tests the stabilisation mechanism directly, for any β > 0.
-@testset "A3: Frame orthonormality preserved by β stabilisation" begin
-    println("\nA3: Frame orthonormality ‖E'E − I‖ < 1e-6")
+# Additional tests performed
+- H1: symplectic pairing  λₖ + λ_{d+1−k} ≈ 0  for all k
+- H2: sum of exponents ≈ 0  (tr(J) = 0 for any Hamiltonian system)
+
+All keyword arguments are forwarded to `test_dissipative`.
+Additional keyword:
+- `atol_symplectic` : tolerance for symplectic pairs (default: 1e-3)
+- `atol_sum`        : tolerance for sum ≈ 0         (default: 1e-3)
+"""
+function test_hamiltonian(prob, λ, x0, T;
+                          atol_symplectic = 1e-3,
+                          atol_sum        = 1e-3,
+                          kwargs...)
+
+    # Run all dissipative tests first
+    test_dissipative(prob, λ, x0, T; kwargs...)
 
     d = prob.d
     k = prob.k
 
-    u0       = make_initial_state(prob, x0)
-    ode!     = build_ode!(prob)
-    ode_prob = ODEProblem(ode!, u0, (0.0, T), nothing)
-    sol      = solve(ode_prob, Tsit5();
-                     reltol=1e-8, abstol=1e-8,
-                     maxiters=1_000_000,
-                     save_everystep=false)
+    # ── H1: Symplectic pairing ────────────────────────────────────────────────
+    # For any Hamiltonian system, symplectic structure forces exponents to
+    # come in conjugate pairs: λₖ + λ_{d+1−k} = 0 for all k.
+    # This is a fundamental property of Hamiltonian dynamics — if this fails,
+    # the frame dynamics are not preserving the symplectic structure.
+    # Requires k = d (full spectrum).
+    @testset "H1: Symplectic pairing λₖ + λ_{d+1-k} ≈ 0" begin
+        println("  H1: Symplectic pairing")
+        for i in 1:d÷2
+            pair_sum = λ[i] + λ[d+1-i]
+            @printf "      λ%d + λ%d = %+.6f  (threshold: %.0e)\n" i (d+1-i) pair_sum atol_symplectic
+            @test abs(pair_sum) < atol_symplectic
+        end
+    end
 
-    E_final = reshape(sol.u[end][d+1 : d+d*k], d, k)
-    err     = norm(E_final' * E_final - I)
-
-    @printf "    ‖E'E − I‖ = %.2e  (threshold: 1e-6)\n" err
-    @test err < 1e-6
-end
-
-# ── Test A4: Sum of exponents equals trace of Jacobian ────────────────────────
-# For any autonomous ODE, the sum of all Lyapunov exponents equals the
-# time-average of tr(J(x(t))). For the Lorenz system, tr(J) = −σ−1−b
-# is CONSTANT along every trajectory, so the average is exact analytically.
-# This is Liouville's theorem applied to the flow.
-# We use Lorenz here because its Jacobian has constant trace — this makes
-# the test exact and sharp (atol=1e-4). For systems with non-constant
-# tr(J), the equality still holds but requires longer T to converge.
-@testset "A4: Sum of exponents = time-average of tr(J)" begin
-    println("\nA4: Sum of exponents = tr(J) = −σ−1−b")
-
-    expected_sum = -(10.0 + 1.0 + 8.0/3.0)   # exact: tr(J) = −σ−1−b
-    actual_sum   = sum(λ)
-
-    @printf "    Σλₘ = %.6f  (expected %.6f)\n" actual_sum expected_sum
-    @test actual_sum ≈ expected_sum atol=1e-4
-end
-
-# ── Test A5: Symplectic pairing for a Hamiltonian system ──────────────────────
-# For any Hamiltonian system, symplectic structure guarantees that Lyapunov
-# exponents come in conjugate pairs: λₖ + λ_{d+1−k} = 0 for all k.
-# This is a fundamental property of Hamiltonian dynamics (not of our
-# specific example) and provides a strong validation of the frame dynamics.
-@testset "A5: Symplectic pairing for Hamiltonian system" begin
-    println("\nA5: Symplectic pairs λₖ + λ_{7-k} ≈ 0")
-
-    prob_ham = hamiltonian_system()
-    x0_ham   = [0.5, 0.3, 0.7, 0.3, 0.2, 0.4]
-    λ_ham    = lyapunov_exponents(prob_ham, x0_ham, 5000.0)
-
-    for k in 1:3
-        pair_sum = λ_ham[k] + λ_ham[7-k]
-        @printf "    λ%d + λ%d = %+.6f  (threshold: 1e-3)\n" k (7-k) pair_sum
-        @test abs(pair_sum) < 1e-3
+    # ── H2: Sum of exponents near zero ────────────────────────────────────────
+    # For any Hamiltonian system tr(J) = 0 everywhere (the flow is
+    # volume-preserving), so the sum of all Lyapunov exponents must be zero.
+    # This follows directly from H1 but is a useful independent check.
+    @testset "H2: Sum of exponents ≈ 0 (volume-preserving flow)" begin
+        println("  H2: Sum of exponents ≈ 0")
+        s = sum(λ)
+        @printf "      Σλₘ = %+.6f  (threshold: %.0e)\n" s atol_sum
+        @test abs(s) < atol_sum
     end
 end
-
-println()
