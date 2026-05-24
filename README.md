@@ -248,6 +248,35 @@ Both scripts save a convergence plot (`.png`) in the project root.
 
 ---
 
+## Warm restarts
+
+If the exponents have not converged after time `T₁`, you can continue
+the integration without starting over using `return_state=true`:
+
+```julia
+# First run — save state for possible restart
+λ, state = lyapunov_exponents(prob, x0, 1000.0; return_state=true)
+
+# Check convergence — inspect λ
+# Not converged yet? Continue for 500 more time units.
+# Exponents are now Λ(1500) / 1500
+λ, state = lyapunov_exponents(prob, state, 500.0)
+
+# Continue again if needed
+λ, state = lyapunov_exponents(prob, state, 500.0)
+# Exponents are now Λ(2000) / 2000
+```
+
+The `LyapunovState` struct holds the full augmented state vector
+$`[x(T);\ \text{vec}(E(T));\ \Lambda(T)]`$ and the total elapsed time.
+Because the accumulator equation $`\dot{\Lambda}_m = J_{mm}`$ is additive,
+the integral from $`0`$ to $`T_1 + T_2`$ equals the integral from $`0`$ to
+$`T_1`$ plus the integral from $`T_1`$ to $`T_1 + T_2`$. The frame
+$`E(T_1)`$ is already orthonormal (maintained by $`\beta`$) so it is a
+valid starting frame for the continuation.
+
+---
+
 ## Running the tests
 
 ```bash
@@ -256,59 +285,64 @@ julia --project=. test/test_examples.jl
 
 The test suite is split into two files with distinct roles:
 
-**`test/test_algorithm.jl`** — provides two callable functions. Import this file and call these functions from your own test file after computing the Lyapunov exponents:
+**`test/test_algorithm.jl`** — provides two callable functions, not a
+standalone script. Import and call these after computing the Lyapunov
+exponents for any system. Both functions require `return_state=true`
+when calling `lyapunov_exponents` so the saved state is available:
 
 ```julia
 include("test/test_algorithm.jl")
 
-# For any dissipative system
-test_dissipative(prob, λ, x0, T)
+λ, state = lyapunov_exponents(prob, x0, T; return_state=true)
 
-# For any Hamiltonian system (calls test_dissipative first, then adds symplectic checks)
-test_hamiltonian(prob, λ, x0, T)
+# For any dissipative system
+test_dissipative(prob, λ, state)
+
+# For any Hamiltonian system (calls test_dissipative first)
+test_hamiltonian(prob, λ, state)
 ```
 
 The generic tests check properties that must hold for **any** correct
 implementation, regardless of which system is used:
 
-| Test | Applies to | Property |
-|------|-----------|---------|
-| D1 | Any system | Exponents in descending order $`\lambda_1 \geq \lambda_2 \geq \dots`$ |
-| D2 | Any autonomous system | At least one exponent near zero if not approaching an equilibrium (flow direction) |
-| D3 | Any system | Frame orthonormality $`\|E^\top E - I\| < 10^{-6}`$ |
-| D4 | Any system | $`k=1`$ consistent with full spectrum |
-| H1 | Hamiltonian only | Symplectic pairing $`\lambda_k + \lambda_{d+1-k} = 0`$ |
-| H2 | Hamiltonian only | Sum of exponents $`\approx 0`$ (volume-preserving flow) |
+| Test | Applies to | Property | Needs |
+|------|-----------|---------|-------|
+| D1 | Any system | Exponents in descending order $`\lambda_1 \geq \lambda_2 \geq \dots`$ | $`\lambda`$ only |
+| D2 | Any autonomous system | At least one exponent near zero when the attractor is not an equilibrium point (flow direction) | $`\lambda`$ only |
+| D3 | Any system | Frame orthonormality $`\|E^\top E - I\| < 10^{-6}`$ | saved state |
+| D4 | Any system | $`k=1`$ consistent with full spectrum | one extra integration |
+| H1 | Hamiltonian only | Symplectic pairing $`\lambda_k + \lambda_{d+1-k} = 0`$ | $`\lambda`$ only |
+| H2 | Hamiltonian only | Sum of exponents $`\approx 0`$ (volume-preserving flow) | $`\lambda`$ only |
 
 **`test/test_examples.jl`** — self-contained script that runs the full
-test suite for both example systems. For each system it:
-1. Computes the Lyapunov exponents
-2. Calls the appropriate generic function (`test_dissipative` or `test_hamiltonian`)
-3. Adds system-specific assertions against known values from the paper
+test suite for both example systems. For each system it computes `λ`
+and `state`, calls the appropriate generic function, then adds
+system-specific assertions against known values from the paper:
 
 | Test | System | Property |
 |------|--------|----------|
 | E1 | Lorenz | $`\lambda_1 > 0`$ (chaotic attractor) |
 | E2 | Lorenz | $`\sum \lambda_m = -\sigma - 1 - b = -13.6\overline{6}`$ (Liouville) |
 | E3 | Lorenz | $`\lambda_1 \approx 0.9057`$ (paper Table 1, tolerance $`\pm 0.05`$) |
-| E4 | Hamiltonian | $`\lambda_1 > 0`$ (chaotic at this energy) |
-| E5 | Hamiltonian | Three positive and three negative exponents |
-| E6 | Hamiltonian | $`\lambda_1 \approx 0.24`$, $`\lambda_2 \approx 0.12`$ (paper Table 2) |
+| E4 | Lorenz | Restart gives same result as single long run |
+| E5 | Hamiltonian | $`\lambda_1 > 0`$ (chaotic at this energy) |
+| E6 | Hamiltonian | Three positive and three negative exponents |
+| E7 | Hamiltonian | $`\lambda_1 \approx 0.24`$, $`\lambda_2 \approx 0.12`$ (paper Table 2) |
 
 To test your own system, follow the same pattern as `test_examples.jl`:
 
 ```julia
-prob = LyapunovProblem(my_v!, my_J!, d, k, β)
-λ    = lyapunov_exponents(prob, x0, T)
+prob         = LyapunovProblem(my_v!, my_J!, d, k, β)
+λ, state     = lyapunov_exponents(prob, x0, T; return_state=true)
 
-test_dissipative(prob, λ, x0, T)   # or test_hamiltonian if applicable
+test_dissipative(prob, λ, state)   # or test_hamiltonian if applicable
 
-# Add your own system-specific assertions here
+# Add your own system-specific assertions
 @test λ[1] > 0.0
 ```
 
-If D-tests fail, the algorithm implementation is broken. If E-tests fail,
-the example systems or their parameters may need adjusting.
+If D-tests fail, the algorithm implementation is broken. If E-tests
+fail, the example systems or their parameters may need adjusting.
 
 ---
 

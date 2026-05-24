@@ -4,18 +4,18 @@
 # EXAMPLE TEST SUITE — self-contained entry point.
 #
 # For each example system this file:
-#   1. Computes the Lyapunov exponents
-#   2. Calls the generic algorithm tests from test_algorithm.jl
-#   3. Adds example-specific assertions (known values from the paper)
+#   1. Computes λ and saves the LyapunovState (return_state=true)
+#   2. Calls the appropriate generic test function from test_algorithm.jl
+#   3. Adds system-specific assertions against known values from the paper
 #
 # Run with:
 #   julia --project=. test/test_examples.jl
 #
 # To test your own system, follow the same pattern:
-#   1. Define prob, x0, T
-#   2. Compute λ = lyapunov_exponents(prob, x0, T)
-#   3. Call test_dissipative(prob, λ, x0, T)  or  test_hamiltonian(prob, λ, x0, T)
-#   4. Add any system-specific @test assertions below
+#   1. Compute: λ, state = lyapunov_exponents(prob, x0, T; return_state=true)
+#   2. Call:    test_dissipative(prob, λ, state)
+#              or test_hamiltonian(prob, λ, state)
+#   3. Add any system-specific @test assertions
 # ─────────────────────────────────────────────────────────────────────────────
 
 push!(LOAD_PATH, joinpath(@__DIR__, ".."))
@@ -35,8 +35,7 @@ println("="^60)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  EXAMPLE 1: LORENZ SYSTEM
-#  Dissipative system — use test_dissipative()
+#  EXAMPLE 1: LORENZ SYSTEM (dissipative)
 #  Reference: Christiansen & Rugh (1997), Table 1
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -46,23 +45,27 @@ prob_lorenz = lorenz_system()
 x0_lorenz   = [1.0, 0.0, 0.0]
 T_lorenz    = 2000.0
 
-λ_lorenz = lyapunov_exponents(prob_lorenz, x0_lorenz, T_lorenz)
+# Compute exponents and save state in one call
+λ_lorenz, state_lorenz = lyapunov_exponents(prob_lorenz, x0_lorenz, T_lorenz;
+                                             return_state = true)
+
 @printf "  λ = [%+.4f, %+.4f, %+.4f]\n\n" λ_lorenz[1] λ_lorenz[2] λ_lorenz[3]
 
-# ── Generic algorithm tests for any dissipative system ────────────────────────
-test_dissipative(prob_lorenz, λ_lorenz, x0_lorenz, T_lorenz)
+# ── Generic algorithm tests ───────────────────────────────────────────────────
+# D1: descending order     — uses λ only
+# D2: one near zero        — uses λ only
+# D3: frame orthonormality — uses state (no re-integration)
+# D4: k=1 consistency      — runs one extra integration from state.u[1:d]
+test_dissipative(prob_lorenz, λ_lorenz, state_lorenz)
 
 # ── Lorenz-specific tests ─────────────────────────────────────────────────────
 
-# E1: system is chaotic — largest exponent must be positive
 @testset "E1: Lorenz λ₁ > 0 (chaotic attractor)" begin
     println("  E1: Lorenz λ₁ > 0")
     @printf "      λ₁ = %+.4f  (should be > 0)\n" λ_lorenz[1]
     @test λ_lorenz[1] > 0.0
 end
 
-# E2: sum = tr(J) = −σ−1−b = −13.6̄ (exact analytical result for Lorenz)
-# This is specific to σ=10, r=28, b=8/3 — not a generic property.
 @testset "E2: Lorenz Σλ = −σ−1−b = −13.6667 (Liouville)" begin
     println("  E2: Lorenz sum of exponents")
     expected = -(10.0 + 1.0 + 8.0/3.0)
@@ -71,18 +74,36 @@ end
     @test actual ≈ expected atol=1e-4
 end
 
-# E3: λ₁ close to paper value (Table 1: 0.9057)
-# Loose tolerance — finite-time estimates vary with initial condition and T.
 @testset "E3: Lorenz λ₁ ≈ 0.9057 (paper Table 1, tolerance ±0.05)" begin
     println("  E3: Lorenz λ₁ vs paper")
     @printf "      λ₁ = %+.4f  (paper: +0.9057)\n" λ_lorenz[1]
     @test abs(λ_lorenz[1] - 0.9057) < 0.05
 end
 
+# ── Restart test ──────────────────────────────────────────────────────────────
+# Verify that restarting from state_lorenz and integrating for another T
+# gives the same result as integrating for 2T from scratch.
+# This validates the LyapunovState restart mechanism.
+@testset "E4: Lorenz restart consistency" begin
+    println("  E4: Restart gives same result as single long run")
+
+    T_extra = 1000.0
+
+    # Option A: restart from saved state
+    λ_restart, _ = lyapunov_exponents(prob_lorenz, state_lorenz, T_extra;
+                                       return_state = true)
+
+    # Option B: single run for T_lorenz + T_extra
+    λ_long = lyapunov_exponents(prob_lorenz, x0_lorenz, T_lorenz + T_extra)
+
+    @printf "      λ₁ (restart) = %+.4f\n" λ_restart[1]
+    @printf "      λ₁ (long)    = %+.4f  (tolerance: ±0.05)\n" λ_long[1]
+    @test λ_restart[1] ≈ λ_long[1] atol=0.05
+end
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  EXAMPLE 2: QUARTIC HAMILTONIAN
-#  Hamiltonian system — use test_hamiltonian()
 #  Reference: Christiansen & Rugh (1997), Table 2
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -92,37 +113,33 @@ prob_ham = hamiltonian_system()
 x0_ham   = [0.5, 0.3, 0.7, 0.3, 0.2, 0.4]
 T_ham    = 5000.0
 
-λ_ham = lyapunov_exponents(prob_ham, x0_ham, T_ham)
+λ_ham, state_ham = lyapunov_exponents(prob_ham, x0_ham, T_ham;
+                                       return_state = true)
+
 @printf "  λ = [%+.4f, %+.4f, %+.4f, %+.4f, %+.4f, %+.4f]\n\n" λ_ham...
 
-# ── Generic algorithm tests for any Hamiltonian system ────────────────────────
-# This calls test_dissipative internally, then adds symplectic + sum checks.
-test_hamiltonian(prob_ham, λ_ham, x0_ham, T_ham)
+# ── Generic algorithm tests ───────────────────────────────────────────────────
+# Calls test_dissipative internally, then adds H1 (symplectic) and H2 (sum=0)
+test_hamiltonian(prob_ham, λ_ham, state_ham)
 
 # ── Hamiltonian-specific tests ────────────────────────────────────────────────
 
-# E4: system is chaotic at this energy level
-@testset "E4: Hamiltonian λ₁ > 0 (chaotic at this energy)" begin
-    println("  E4: Hamiltonian λ₁ > 0")
+@testset "E5: Hamiltonian λ₁ > 0 (chaotic at this energy)" begin
+    println("  E5: Hamiltonian λ₁ > 0")
     @printf "      λ₁ = %+.4f  (should be > 0)\n" λ_ham[1]
     @test λ_ham[1] > 0.0
 end
 
-# E5: three positive and three negative exponents
-# This follows from symplectic pairing but is worth checking explicitly.
-@testset "E5: Hamiltonian sign structure (3 positive, 3 negative)" begin
-    println("  E5: Hamiltonian sign structure")
+@testset "E6: Hamiltonian sign structure (3 positive, 3 negative)" begin
+    println("  E6: Hamiltonian sign structure")
     @printf "      positive: λ₁=%+.4f  λ₂=%+.4f  λ₃=%+.4f\n" λ_ham[1] λ_ham[2] λ_ham[3]
     @printf "      negative: λ₄=%+.4f  λ₅=%+.4f  λ₆=%+.4f\n" λ_ham[4] λ_ham[5] λ_ham[6]
     @test all(λ_ham[1:3] .> 0.0)
     @test all(λ_ham[4:6] .< 0.0)
 end
 
-# E6: positive exponents in expected range compared to paper (Table 2)
-# Generous tolerance — our initial condition and energy differ from the
-# paper's unspecified choice, so exact agreement is not expected.
-@testset "E6: Hamiltonian positive exponents in expected range (paper Table 2)" begin
-    println("  E6: Hamiltonian λ₁, λ₂ vs paper")
+@testset "E7: Hamiltonian positive exponents in expected range (paper Table 2)" begin
+    println("  E7: Hamiltonian λ₁, λ₂ vs paper")
     @printf "      λ₁ = %+.4f  (paper: ~0.24, tolerance ±0.15)\n" λ_ham[1]
     @printf "      λ₂ = %+.4f  (paper: ~0.12, tolerance ±0.10)\n" λ_ham[2]
     @test abs(λ_ham[1] - 0.24) < 0.15

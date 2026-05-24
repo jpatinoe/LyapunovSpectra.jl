@@ -1,6 +1,8 @@
 # examples/hamiltonian.jl
 #
 # Reproduces the Hamiltonian results from Christiansen & Rugh (1997):
+# Note that the paper's Table 2 is based on n_runs=1000 runs, not just a single run.
+# The results might differ because of the initial condition. (The paper doesn't specify how the initial condition was chosen)
 #   - Figure 2: positive Lyapunov exponents from a single run
 #   - Table  2: Mean and RMS deviation over n_runs runs
 #
@@ -17,6 +19,7 @@ using LinearAlgebra
 using OrdinaryDiffEq   
 using Plots
 
+# These helpers are not part of the LyapunovSpectra. This is only to guarantee a "safe" energy window for the initial conditions, so we can reproduce the paper's results more closely.
 # ── Helper: compute Hamiltonian energy ───────────────────────────────────────
 function hamiltonian_energy(u)
     x, y, z    = u[1], u[2], u[3]

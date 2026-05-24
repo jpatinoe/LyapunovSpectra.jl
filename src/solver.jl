@@ -1,119 +1,168 @@
 # src/solver.jl
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# THIS IS THE USER INTERFACE.
+# THE USER-FACING INTERFACE TO THE SOLVER
 #
-# This file contains two functions:
+# This file contains:
+#
+#   LyapunovState            — struct holding the full augmented state
+#                              and total elapsed time, used for restarts.
 #
 #   lyapunov_exponents       — single run for one initial condition.
-#                              solve the augmented system, then extract λ = Λ/T.
+#                              Accepts either an x0 vector (fresh start)
+#                              or a LyapunovState (warm restart from a
+#                              previous computation).
 #
-#   lyapunov_exponents_mean  — this is just a convenience wrapper that repeats the single
+#   lyapunov_exponents_mean  — convenience wrapper that repeats the single
 #                              run over a list of initial conditions and
-#                              returns mean and standard deviation. For testing and statistics,
-#                              not essential to the algorithm.
-#
-# This file is purely about calling the solver and packaging the output.
+#                              returns mean and standard deviation.
 # ─────────────────────────────────────────────────────────────────────────────
 
-using OrdinaryDiffEq   # ODEProblem, solve(), Tsit5()
+using OrdinaryDiffEq
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  DATA STRUCTURE: LyapunovState
+#  Holds the full augmented state at the end of an integration, plus the
+#  total elapsed time. Used to restart a computation without starting over.
+# ══════════════════════════════════════════════════════════════════════════════
+
+"""
+    LyapunovState(u, T_total)
+
+Holds the result of a `lyapunov_exponents` run in a form that can be
+used to restart the computation later.
+
+# Fields
+- `u::Vector{Float64}`  : full augmented state vector at end of integration
+                          layout: [x(T); vec(E(T)); Λ(T)]
+- `T_total::Float64`    : total integration time accumulated so far
+
+# Usage
+```julia
+# First run — not yet converged
+λ, state = lyapunov_exponents(prob, x0, T1; return_state=true)
+
+# Continue from where we left off
+λ, state = lyapunov_exponents(prob, state, T2)
+
+# Exponents are now Λ(T1+T2) / (T1+T2)
+```
+"""
+struct LyapunovState
+    u       :: Vector{Float64}   # full augmented state [x; vec(E); Λ]
+    T_total :: Float64           # total integration time accumulated so far
+end
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN FUNCTION: lyapunov_exponents
+#  Steps 2 + 3 of the workflow: solve the augmented system, return Λ(T)/T.
+#  Accepts either a fresh x0 or a LyapunovState for warm restarts.
 # ══════════════════════════════════════════════════════════════════════════════
 
 """
-    lyapunov_exponents(prob, x0, T; solver, reltol, abstol)
+    lyapunov_exponents(prob, start, T; solver, reltol, abstol, return_state)
 
-Integrate the augmented CGS (Continuous Gram-Schmidt) system from t=0 to t=T and return the
-k Lyapunov exponents λ₁ ≥ λ₂ ≥ … ≥ λₖ.
+Integrate the augmented CGS system and return the k Lyapunov exponents
+λ₁ ≥ λ₂ ≥ … ≥ λₖ.
 
 # Arguments
-- `prob::LyapunovProblem` : the system definition (from algorithm.jl)
-- `x0::Vector{Float64}`   : initial condition for the trajectory only
-                            (the frame and accumulators are initialised
-                             automatically by make_initial_state)
-- `T::Float64`            : total integration time
+- `prob::LyapunovProblem`              : the system definition
+- `start::Vector{Float64}`             : initial condition x₀ for a fresh run
+  OR
+  `start::LyapunovState`               : saved state from a previous run,
+                                         for continuing an integration
+- `T::Float64`                         : additional integration time
 
-# Keyword arguments (optional — sensible defaults provided)
-- `solver`  : ODE solver object. Default: Tsit5(), a modern 4th/5th order
-              Runge-Kutta method.
-              Could be swapped for any OrdinaryDiffEq solver (with caution).
-- `reltol`  : relative tolerance for the ODE solver. Default: 1e-6.
-- `abstol`  : absolute tolerance for the ODE solver. Default: 1e-6.
+# Keyword arguments
+- `solver`        : ODE solver (default: Tsit5(), equivalent to ode45)
+- `reltol`        : relative tolerance (default: 1e-6)
+- `abstol`        : absolute tolerance (default: 1e-6)
+- `return_state`  : if true, also return a `LyapunovState` for future restarts
+                    (default: false)
 
 # Returns
-- `λ::Vector{Float64}` of length k — the estimated Lyapunov exponents,
-  in descending order λ₁ ≥ λ₂ ≥ … ≥ λₖ.
+- `λ::Vector{Float64}` of length k                    if `return_state=false`
+- `(λ::Vector{Float64}, state::LyapunovState)`        if `return_state=true`
+
+# Examples
+```julia
+# Fresh run
+λ = lyapunov_exponents(prob, x0, 1000.0)
+
+# Fresh run, save state for possible restart
+λ, state = lyapunov_exponents(prob, x0, 1000.0; return_state=true)
+
+# Warm restart — continue from saved state for 500 more time units
+# Exponents are now Λ(1500) / 1500
+λ, state = lyapunov_exponents(prob, state, 500.0)
+```
 """
 function lyapunov_exponents(prob::LyapunovProblem,
-                             x0::Vector{Float64},
+                             start,           # Vector{Float64} or LyapunovState
                              T::Float64;
-                             solver  = Tsit5(),   # ← swap here with caution for a different integrator
-                             reltol  = 1e-6,
-                             abstol  = 1e-6)
+                             solver       = Tsit5(),
+                             reltol       = 1e-6,
+                             abstol       = 1e-6,
+                             return_state = false)
 
-    # ── Build the initial state vector u₀ ─────────────────────────────────────
-    # x₀ only has d components (the trajectory). The full augmented state u₀
-    # has d + d*k + k components (trajectory + frame + accumulators).
-    # make_initial_state assembles u₀ = [x₀; vec(E₀); zeros(k)].
-    u0 = make_initial_state(prob, x0)
+    # ── Build initial state and track total elapsed time ──────────────────────
+    # Dispatch on the type of `start`:
+    #   Vector{Float64}  → fresh run, build u0 from x0
+    #   LyapunovState    → warm restart, reuse saved u and accumulate T
+    if isa(start, Vector{Float64})
+        # Fresh run: build the full augmented initial state from x0
+        u0      = make_initial_state(prob, start)
+        T_total = T   # total time is just this run
 
-    # ── Build the augmented ODE right-hand side ────────────────────────────────
-    # build_ode! assembles the full augmented system (eq. 6) automatically from prob.v, prob.J, prob.β.
-    # The returned ode! function encodes all d + d*k + k equations.
-    ode! = build_ode!(prob)
+    elseif isa(start, LyapunovState)
+        # Warm restart: reuse the saved augmented state
+        # The frame E and accumulators Λ carry over from the previous run.
+        # The accumulators continue accumulating from where they left off,
+        # so dividing by T_total at the end gives the correct time average.
+        u0      = start.u
+        T_total = start.T_total + T   # add new time to previous total
 
-    # ── Set up the ODE problem ─────────────────────────────────────────────────
-    # ODEProblem packages the ODE function, initial condition, and time span
-    # into one object, without solving anything yet.
-    # tspan = (0.0, T) means: integrate from t=0 to t=T.
-    # The last argument `nothing` is the parameter vector p — unused because
-    # all parameters are captured inside the ode! closure.
-    tspan    = (0.0, T)
+    else
+        error("start must be a Vector{Float64} (fresh run) or LyapunovState (restart)")
+    end
+
+    # ── Build and solve the augmented ODE ────────────────────────────────────
+    ode!     = build_ode!(prob)
+    tspan    = (0.0, T)              # always integrate for T more time units
     ode_prob = ODEProblem(ode!, u0, tspan, nothing)
 
-    # ── Solve the augmented ODE system ────────────────────────────────────────
-    # This is the actual solve call. `solver` defaults to Tsit5() —
-    # a modern explicit Runge-Kutta method with adaptive step size,
-    #
-    # save_everystep = false: only store the final state u(T), not the
-    # full trajectory. We only need Λ(T) at the end, so saving every
-    # step would waste memory for no benefit.
-    #
-    # maxiters = 1_000_000: maximum number of time steps before the solver
-    # gives up.
     sol = solve(ode_prob, solver;
                 reltol         = reltol,
                 abstol         = abstol,
                 maxiters       = 1_000_000,
                 save_everystep = false)
 
-    # ── Extract results ───────────────────────────────────────
-    # sol.u[end] is the final state vector u(T) — a flat array of length
-    # d + d*k + k. We only need the last k elements: the accumulators Λ(T).
-    #
-    # The accumulators start at position d + d*k + 1 in the flat array:
-    #   positions 1   … d       → x(T)    (trajectory, discarded)
-    #   positions d+1 … d+d*k   → E(T)    (frame, discarded)
-    #   positions d+d*k+1 … end → Λ(T)    (accumulators — what we want)
+    # ── Extract results ───────────────────────────────────────────────────────
+    # Λ(T) lives in the last k elements of the final state vector.
+    # Dividing by T_total (not just T) gives the correct time average
+    # when restarting — the accumulators contain the sum over ALL time.
     d       = prob.d
     k       = prob.k
     u_final = sol.u[end]
     Λ       = u_final[d + d*k + 1 : d + d*k + k]
+    λ       = Λ ./ T_total
 
-    # Lyapunov exponents = Λₘ(T) / T  (paper eq. 7, Theorem p.1065)
-    return Λ ./ T
+    # ── Return results ────────────────────────────────────────────────────────
+    if return_state
+        # Pack the final augmented state and total elapsed time into a
+        # LyapunovState struct for future restarts.
+        state = LyapunovState(u_final, T_total)
+        return λ, state
+    else
+        return λ
+    end
 end
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  EXTRA FUNCTION: lyapunov_exponents_mean
-#
-#  Repeats lyapunov_exponents over a list of initial conditions and
-#  computes statistics. Not essential to the algorithm — just a loop with
-#  mean and std at the end.
+#  CONVENIENCE FUNCTION: lyapunov_exponents_mean
 # ══════════════════════════════════════════════════════════════════════════════
 
 """
@@ -123,7 +172,8 @@ Run `lyapunov_exponents` for each initial condition in `x0_list` and
 return the mean and standard deviation across all runs.
 
 Keyword arguments (solver, reltol, abstol) are forwarded to
-`lyapunov_exponents` for every run.
+`lyapunov_exponents` for every run. Note: `return_state` is not
+forwarded — use `lyapunov_exponents` directly if you need states.
 
 # Returns
 - `λ_mean::Vector{Float64}` — mean of each exponent across all runs
@@ -133,23 +183,9 @@ function lyapunov_exponents_mean(prob::LyapunovProblem,
                                   x0_list::Vector{Vector{Float64}},
                                   T::Float64; kwargs...)
 
-    # ── Run lyapunov_exponents for every initial condition ────────────────────
-    # This is a list comprehension.
-    # `kwargs...` forwards all keyword arguments (solver, reltol, etc.)
-    # transparently to each lyapunov_exponents call.
-    results = [lyapunov_exponents(prob, x0, T; kwargs...) for x0 in x0_list]
+    results       = [lyapunov_exponents(prob, x0, T; kwargs...) for x0 in x0_list]
+    result_matrix = hcat(results...)'
 
-    # ── Stack results into a matrix and compute statistics ────────────────────
-    # results is a vector of k-element vectors (one per run).
-    # hcat(results...) stacks them as columns → d×n_runs matrix.
-    # Transposing (') gives an n_runs×k matrix where:
-    #   row i   = the k exponents from run i
-    #   column m = all estimates of λₘ across runs
-    result_matrix = hcat(results...)'   # n_runs × k matrix
-
-    # Compute mean and std along dimension 1 (across rows = across runs),
-    # giving one mean and one std per exponent.
-    # vec() converts the 1×k result of mean/std into a plain length-k vector.
     λ_mean = vec(mean(result_matrix, dims=1))
     λ_std  = vec(std(result_matrix,  dims=1))
 
