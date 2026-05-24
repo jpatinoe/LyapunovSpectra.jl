@@ -62,7 +62,9 @@ LyapunovSpectra.jl/
 │   ├── lorenz.jl            # Step-by-step walkthrough — Lorenz system
 │   └── hamiltonian.jl       # Quartic Hamiltonian system
 ├── test/
-│   └── runtests.jl          # Automated test suite (8 tests)
+│   └── runtests.jl          # Automated test suite (algorithm + examples)
+│   ├── test_algorithm.jl    # Tests for algorithm implementation
+│   ├── test_examples.jl     # Specific test for the examples
 └── Project.toml
 ```
 
