@@ -285,8 +285,8 @@ julia --project=. test/test_examples.jl
 
 The test suite is split into two files with distinct roles:
 
-**`test/test_algorithm.jl`** — provides two callable functions, not a
-standalone script. Import and call these after computing the Lyapunov
+**`test/test_algorithm.jl`** — provides two callable functions. 
+Import and call these after computing the Lyapunov
 exponents for any system. Both functions require `return_state=true`
 when calling `lyapunov_exponents` so the saved state is available:
 
@@ -341,7 +341,7 @@ test_dissipative(prob, λ, state)   # or test_hamiltonian if applicable
 @test λ[1] > 0.0
 ```
 
-If D-tests fail, the algorithm implementation is broken. If E-tests
+If D-tests (or H-tests) fail, the algorithm implementation is broken. If E-tests
 fail, the example systems or their parameters may need adjusting.
 
 ---
