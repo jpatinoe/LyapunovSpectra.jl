@@ -55,12 +55,12 @@ The method is proven strongly stable when $`\beta > -\lambda_k`$ (Theorem, p.106
 LyapunovSpectra.jl/
 ├── src/
 │   ├── LyapunovSpectra.jl   # Module entry point
-│   ├── algorithm.jl         # Core CGS augmented ODE (eq. 6)
+│   ├── algorithm.jl         # Core Continuous Gram-Schmidt (CGS) augmented ODE
 │   ├── systems.jl           # Built-in example systems
 │   └── solver.jl            # ODE wrapper and statistics
 ├── examples/
-│   ├── lorenz.jl            # Step-by-step walkthrough — Lorenz system
-│   └── hamiltonian.jl       # Quartic Hamiltonian system
+│   ├── lorenz.jl            # Step-by-step example — Lorenz system
+│   └── hamiltonian.jl       # Example Quartic Hamiltonian system
 ├── test/
 │   ├── test_algorithm.jl    # Tests for algorithm implementation
 │   └── test_examples.jl     # Specific test for the examples
@@ -87,10 +87,10 @@ julia --project=. -e 'using Pkg; Pkg.add("Plots")'
 
 ---
 
-## Walkthrough: Lorenz system
+## Example: Lorenz system
 
 `examples/lorenz.jl` is a self-contained step-by-step example that reproduces
-Figure 1 and Table 1 of the paper. Here is what each step does and why.
+Figure 1 and Table 1 of the paper by Christiansen and Rugh.
 
 ### Step 1 — Define the system
 
@@ -118,7 +118,7 @@ prob = LyapunovProblem(my_v!, my_J!, 3, 3, 20.0)
 The `LyapunovProblem` struct packages the system definition together with
 the dimension $`d`$, the number of exponents to compute $`k`$, and the
 stability parameter $`\beta`$. For the Lorenz system, $`\beta = 20`$ as
-chosen in the paper (section 3).
+chosen in the paper (see section 3). Do not confuse with the internal parameter $`\beta`$ of the Lorenz equations.
 
 Alternatively, use the built-in constructor:
 
@@ -129,8 +129,7 @@ prob = lorenz_system()   # d=3, k=3, β=20
 ### Step 2 — Warm-up integration
 
 Starting from an arbitrary initial condition, we first integrate the system
-for a short time to land on the attractor before measuring. This eliminates
-the transient visible at small $`t`$ in the figure below.
+for a short time to land close to the attractor before measuring the Lyapunov spectrum. This eliminates the transient visible at small $`t`$ in the figure below.
 
 ```julia
 using OrdinaryDiffEq
@@ -145,7 +144,7 @@ x0 = warmup_sol.u[end][1:3]   # trajectory part of the augmented state
 ```
 
 We use $`k = 1`$ for the warm-up (only the trajectory is evolved, no frame)
-so it is cheap. The warm-up time of $`T = 50`$ is enough for the Lorenz
+so it is computationally cheap. The warm-up time of $`T = 50`$ is enough for the Lorenz
 system to reach its attractor from almost any starting point.
 
 ### Step 3 — Compute the Lyapunov exponents
@@ -257,8 +256,7 @@ julia --project=. test/test_examples.jl
 
 The test suite is split into two files with distinct roles:
 
-**`test/test_algorithm.jl`** — provides two callable functions. Import this file and call these functions from your
-own test file after computing the Lyapunov exponents:
+**`test/test_algorithm.jl`** — provides two callable functions. Import this file and call these functions from your own test file after computing the Lyapunov exponents:
 
 ```julia
 include("test/test_algorithm.jl")
