@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "0ceb92b4f23f4da274049c85f88e577036ec47d9"
+project_hash = "ff197a0622225dd72f5137d45e6a45b3b8a320ae"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -950,7 +950,7 @@ uuid = "e6f89c97-d47a-5376-807f-9c37f3926c36"
 version = "1.2.0"
 
 [[deps.LyapunovSpectra]]
-deps = ["ForwardDiff", "LinearAlgebra", "OrdinaryDiffEq", "OrdinaryDiffEqRosenbrock", "Printf", "Random", "Statistics"]
+deps = ["ForwardDiff", "LinearAlgebra", "OrdinaryDiffEq", "OrdinaryDiffEqRosenbrock", "Plots", "Printf", "Random", "Statistics"]
 path = "."
 uuid = "8a789c4d-2949-4da9-aa7a-3ecc5f854c10"
 version = "0.1.0"

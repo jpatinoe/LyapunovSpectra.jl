@@ -1,5 +1,7 @@
 # LyapunovSpectra.jl
 
+[![CI](https://github.com/jpatinoe/LyapunovSpectra.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/jpatinoe/LyapunovSpectra.jl/actions/workflows/CI.yml)
+
 A Julia implementation of the continuous Gram–Schmidt orthonormalization
 method for computing Lyapunov spectra associated with a dynamical system
 specified by a set of differential equations, based on:
@@ -205,7 +207,6 @@ over many runs reduces the finite-time variance.
 ### Defining your own system
 
 ```julia
-push!(LOAD_PATH, ".")
 using LyapunovSpectra
 
 function my_v!(du, u)
@@ -280,8 +281,12 @@ valid starting frame for the continuation.
 ## Running the tests
 
 ```bash
+julia --project=. -e 'using Pkg; Pkg.test()'
+# or run the suite directly
 julia --project=. test/test_examples.jl
 ```
+
+The tests also run automatically on every push via GitHub Actions.
 
 The test suite is split into two files with distinct roles:
 
